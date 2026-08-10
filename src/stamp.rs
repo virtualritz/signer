@@ -14,8 +14,15 @@ use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::TextChar;
 use std::path::Path;
 
-const DATE_LABEL: &str = "Datum:";
-const SIGNATURE_LABEL: &str = "Klient/Bevollmächtigter/Betreuer:";
+/// What to write, and which labels to write it after.
+pub struct Fill<'a> {
+    pub date: &'a str,
+    pub date_font_size: f32,
+    pub date_label: &'a str,
+    pub signature: &'a Signature,
+    pub signature_label: &'a str,
+    pub size: Size,
+}
 
 /// Resource names for what we add. Names are scoped to a page's resource
 /// dictionary, so these only have to avoid colliding with the generator's own.
@@ -141,22 +148,19 @@ impl Signature {
     }
 }
 
-pub fn sign(
-    input: &Path,
-    output: &Path,
-    date: &str,
-    signature: &Signature,
-    size: Size,
-    date_font_size: f32,
-) -> Result<()> {
-    let pages = locate(input)?;
+pub fn sign(input: &Path, output: &Path, fill: &Fill) -> Result<()> {
+    let pages = locate(input, fill)?;
     if pages.is_empty() {
-        bail!("found no `{DATE_LABEL}` or `{SIGNATURE_LABEL}` blank to fill");
+        bail!(
+            "found no `{}` or `{}` blank to fill",
+            fill.date_label,
+            fill.signature_label
+        );
     }
 
     let mut doc = Document::load(input)?;
     let page_ids = doc.get_pages();
-    let image = signature.write_to(&mut doc)?;
+    let image = fill.signature.write_to(&mut doc)?;
     let font = doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type1",
@@ -173,15 +177,16 @@ pub fn sign(
         if let Some(blank) = page.date {
             add_resource(&mut doc, page_id, "Font", FONT_RESOURCE, font)?;
             overlay.push_str(&format!(
-                "BT /{FONT_RESOURCE} {date_font_size} Tf 0 g 1 0 0 1 {} {} Tm ({}) Tj ET\n",
-                blank.x + date_font_size / 4.0,
+                "BT /{FONT_RESOURCE} {} Tf 0 g 1 0 0 1 {} {} Tm ({}) Tj ET\n",
+                fill.date_font_size,
+                blank.x + fill.date_font_size / 4.0,
                 blank.y + 1.0,
-                escape(date),
+                escape(fill.date),
             ));
         }
         if let Some(blank) = page.signature {
             doc.add_xobject(page_id, IMAGE_RESOURCE, image)?;
-            let at = signature.placement(blank, size);
+            let at = fill.signature.placement(blank, fill.size);
             overlay.push_str(&format!(
                 "q {} 0 0 {} {} {} cm /{IMAGE_RESOURCE} Do Q\n",
                 at.width, at.height, at.x, at.y,
@@ -255,7 +260,7 @@ fn escape(text: &str) -> String {
 }
 
 /// The pages holding blanks, and where those blanks are.
-fn locate(input: &Path) -> Result<Vec<Page>> {
+fn locate(input: &Path, fill: &Fill) -> Result<Vec<Page>> {
     let doc = PdfDocument::open(input)?;
     let mut pages = Vec::new();
 
@@ -263,8 +268,8 @@ fn locate(input: &Path) -> Result<Vec<Page>> {
         let chars = doc.extract_page_text(index)?.chars;
         let page = Page {
             index,
-            date: find_blank(&chars, DATE_LABEL),
-            signature: find_blank(&chars, SIGNATURE_LABEL),
+            date: find_blank(&chars, fill.date_label),
+            signature: find_blank(&chars, fill.signature_label),
         };
         if page.date.is_some() || page.signature.is_some() {
             pages.push(page);

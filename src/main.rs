@@ -7,12 +7,14 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use directories::ProjectDirs;
 use serde::Deserialize;
-use stamp::{Signature, Size};
+use stamp::{Fill, Signature, Size};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_SCALE: f32 = 200.0;
 const DEFAULT_DATE_FONT_SIZE: f32 = 8.0;
 const DEFAULT_DATE_FORMAT: &str = "%d.%m.%Y";
+const DEFAULT_DATE_LABEL: &str = "Datum:";
+const DEFAULT_SIGNATURE_LABEL: &str = "Klient/Bevollmächtigter/Betreuer:";
 
 /// What `--date` is read as, whichever way it is written.
 const DATE_INPUT_FORMATS: [&str; 2] = ["%d.%m.%Y", "%Y-%m-%d"];
@@ -34,6 +36,15 @@ struct Args {
     /// Signature image. Alpha is derived from luminance if it has none.
     #[arg(short, long)]
     signature: Option<PathBuf>,
+
+    /// Label the date is written after. Defaults to `Datum:`.
+    #[arg(long)]
+    date_label: Option<String>,
+
+    /// Label the signature is drawn after.
+    /// Defaults to `Klient/Bevollmächtigter/Betreuer:`.
+    #[arg(long)]
+    signature_label: Option<String>,
 
     /// Date to fill in, as DD.MM.YYYY or YYYY-MM-DD. Defaults to today.
     #[arg(short, long)]
@@ -90,6 +101,23 @@ fn main() -> Result<()> {
         .date_font_size
         .or(config.date_font_size)
         .unwrap_or(DEFAULT_DATE_FONT_SIZE);
+    let date_label = cli
+        .date_label
+        .or(config.date_label)
+        .unwrap_or_else(|| DEFAULT_DATE_LABEL.to_string());
+    let signature_label = cli
+        .signature_label
+        .or(config.signature_label)
+        .unwrap_or_else(|| DEFAULT_SIGNATURE_LABEL.to_string());
+
+    let fill = Fill {
+        date: &date,
+        date_font_size,
+        date_label: &date_label,
+        signature: &signature,
+        signature_label: &signature_label,
+        size,
+    };
 
     for pdf in &cli.pdfs {
         let output = if cli.in_place {
@@ -98,8 +126,7 @@ fn main() -> Result<()> {
             let stem = pdf.file_stem().unwrap_or_default().to_string_lossy();
             pdf.with_file_name(format!("{stem}_signed.pdf"))
         };
-        stamp::sign(pdf, &output, &date, &signature, size, date_font_size)
-            .with_context(|| format!("signing {}", pdf.display()))?;
+        stamp::sign(pdf, &output, &fill).with_context(|| format!("signing {}", pdf.display()))?;
         println!("{}", output.display());
     }
 

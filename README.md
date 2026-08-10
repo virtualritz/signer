@@ -1,8 +1,8 @@
 # `signer`
 
-A PDF signing CLI helper. It fills the `Datum:` and
-`Klient/Bevollmächtigter/Betreuer:` blanks of a Leistungsnachweis with a date and
-a signature image.
+A PDF signing CLI helper. It writes a date and a signature image into the blanks
+that follow two labels, defaulting to the `Datum:` and
+`Klient/Bevollmächtigter/Betreuer:` of a Leistungsnachweis.
 
 ## Usage
 
@@ -12,9 +12,16 @@ signer ~/Downloads/Leistungsnachweis_Mai_?.pdf
 
 Each input gets a `<name>_signed.pdf` beside it, unless `--in-place` is given.
 
-Blanks are found by their label rather than by position, so page size, layout and
-count do not matter. Every page carrying a label is filled; a document carrying
-none is an error rather than a silent no-op.
+A blank is the run of underscores following its label. Blanks are found by that
+label rather than by position, so page size, layout and count do not matter.
+Every page carrying a label is filled; a document carrying none is an error
+rather than a silent no-op.
+
+Both labels are configurable, so any form laid out this way can be filled:
+
+```sh
+signer --date-label 'Date:' --signature-label 'Signed:' contract.pdf
+```
 
 ## Configuration
 
@@ -25,6 +32,8 @@ Linux. Flags override it, and a signature in neither is an error.
 signature = "/path/to/signature.tif"
 
 # Optional, shown with their defaults:
+# date_label = "Datum:"
+# signature_label = "Klient/Bevollmächtigter/Betreuer:"
 # date_format = "%d.%m.%Y"
 # scale = 200.0
 # signature_height = 10.0    # Millimetres. Takes precedence over `scale`.
@@ -36,6 +45,8 @@ signature = "/path/to/signature.tif"
 | Flag                        | Config key         |                                                  |
 | --------------------------- | ------------------ | ------------------------------------------------ |
 | `-s`, `--signature <PATH>`  | `signature`        | Signature image.                                 |
+| `--date-label <TEXT>`       | `date_label`       | Label the date is written after.                 |
+| `--signature-label <TEXT>`  | `signature_label`  | Label the signature is drawn after.              |
 | `-d`, `--date <DATE>`       |                    | `DD.MM.YYYY` or `YYYY-MM-DD`. Defaults to today. |
 | `--date-format <FORMAT>`    | `date_format`      | `strftime` format the date is written in.        |
 | `--scale <PERCENT>`         | `scale`            | Signature width, as a percentage of the blank.   |

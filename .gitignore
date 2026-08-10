@@ -1,0 +1,8 @@
+/target
+
+# Care records used as test input. Real patient and staff data, and the signed
+# outputs additionally embed a real handwritten signature. Never commit these.
+*.pdf
+
+# Local session logs.
+/.claude/audit/

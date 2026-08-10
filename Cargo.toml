@@ -1,0 +1,15 @@
+[package]
+name = "signer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+image = { version = "0.25.10", default-features = false, features = ["tiff", "png", "jpeg"] }
+jiff = "0.2"
+lopdf = "0.44.0"
+pdf_oxide = "0.3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"

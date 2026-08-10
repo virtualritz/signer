@@ -2,12 +2,18 @@
 //! Leistungsnachweis PDF with a date and a signature image.
 
 mod stamp;
+#[cfg(test)]
+mod tests;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use directories::ProjectDirs;
+use jiff::Zoned;
+use jiff::civil::Date;
+use jiff::fmt::strtime;
 use serde::Deserialize;
 use stamp::{Fill, Signature, Size};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_SCALE: f32 = 200.0;
@@ -133,22 +139,22 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Read `date` — or today, if there is none — and write it back out in
+/// Read `date` -- or today, if there is none -- and write it back out in
 /// `format`, so the result is the same whichever way the date was given.
 fn format_date(date: Option<&str>, format: &str) -> Result<String> {
     let date = match date {
         Some(date) => parse_date(date)?,
-        None => jiff::Zoned::now().date(),
+        None => Zoned::now().date(),
     };
-    jiff::fmt::strtime::format(format, date)
+    strtime::format(format, date)
         .with_context(|| format!("writing the date with the format `{format}`"))
 }
 
-fn parse_date(date: &str) -> Result<jiff::civil::Date> {
+fn parse_date(date: &str) -> Result<Date> {
     DATE_INPUT_FORMATS
         .iter()
         .find_map(|format| {
-            jiff::fmt::strtime::parse(format, date)
+            strtime::parse(format, date)
                 .and_then(|parsed| parsed.to_date())
                 .ok()
         })
@@ -169,7 +175,7 @@ fn load_config(explicit: Option<&Path>) -> Result<Args> {
             toml::from_str(&config).with_context(|| format!("parsing {}", path.display()))
         }
         // A missing config is only an error if the user pointed us at it.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && explicit.is_none() => {
+        Err(error) if error.kind() == ErrorKind::NotFound && explicit.is_none() => {
             Ok(Args::default())
         }
         Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),

@@ -1,6 +1,6 @@
 //! Locating the blanks and stamping them.
 //!
-//! `pdf_oxide` does the reading — it is the only crate here that reports
+//! `pdf_oxide` does the reading -- it is the only crate here that reports
 //! per-character bounding boxes, which is what makes the underscore runs
 //! findable. `lopdf` does the writing, because `pdf_oxide` 0.3.77 cannot
 //! overlay onto an existing page: its additions inherit the original content
@@ -14,14 +14,17 @@ use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::TextChar;
 use std::path::Path;
 
+#[cfg(test)]
+mod tests;
+
 /// What to write, and which labels to write it after.
-pub struct Fill<'a> {
-    pub date: &'a str,
-    pub date_font_size: f32,
-    pub date_label: &'a str,
-    pub signature: &'a Signature,
-    pub signature_label: &'a str,
-    pub size: Size,
+pub(crate) struct Fill<'a> {
+    pub(crate) date: &'a str,
+    pub(crate) date_font_size: f32,
+    pub(crate) date_label: &'a str,
+    pub(crate) signature: &'a Signature,
+    pub(crate) signature_label: &'a str,
+    pub(crate) size: Size,
 }
 
 /// Resource names for what we add. Names are scoped to a page's resource
@@ -45,7 +48,7 @@ const PIVOT: f32 = 0.1;
 
 /// How large to draw the signature.
 #[derive(Clone, Copy)]
-pub enum Size {
+pub(crate) enum Size {
     /// A percentage of the blank's width.
     Scale(f32),
     /// A height in millimetres.
@@ -54,7 +57,7 @@ pub enum Size {
 
 /// A signature image, premultiplied into the two planes a PDF wants: the colour
 /// to paint, and the soft mask saying where to paint it.
-pub struct Signature {
+pub(crate) struct Signature {
     width: u32,
     height: u32,
     color: Vec<u8>,
@@ -62,7 +65,7 @@ pub struct Signature {
 }
 
 impl Signature {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub(crate) fn load(path: &Path) -> Result<Self> {
         let image = image::open(path)
             .with_context(|| format!("reading {}", path.display()))?
             .into_rgba8();
@@ -148,7 +151,7 @@ impl Signature {
     }
 }
 
-pub fn sign(input: &Path, output: &Path, fill: &Fill) -> Result<()> {
+pub(crate) fn sign(input: &Path, output: &Path, fill: &Fill) -> Result<()> {
     let pages = locate(input, fill)?;
     if pages.is_empty() {
         bail!(

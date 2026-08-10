@@ -82,5 +82,16 @@ original content stream's transform instead of starting in page space, emits `BT
 without a closing `ET`, and references an image XObject it never registers, so
 `add_image_bytes_to_page` cannot work at all.
 
+## Development
+
+Standards come from [blueprints], vendored at `.blueprints`. That submodule is
+private, so `--recursive` clones will skip it; nothing in the build depends on
+it.
+
+```sh
+just ci    # fmt-check + check + lint-check + test + build
+```
+
+[blueprints]: https://github.com/virtualritz/blueprints
 [`pdf_oxide`]: https://crates.io/crates/pdf_oxide
 [`lopdf`]: https://crates.io/crates/lopdf

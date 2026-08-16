@@ -169,8 +169,18 @@ pub(crate) fn sign(input: &Path, output: &Path, fill: &Fill) -> Result<()> {
             }
             Ok(())
         })?;
+
         Ok(())
     })?;
+
+    // Leave a scanned document the right way up, every page of it -- including
+    // any that carried no blank, so the sheaf stays consistent. The stamps live
+    // in user space along with the form, so turning the page turns all of it
+    // together and they stay on their lines.
+    if let Some(rotation) = pages.iter().find_map(|page| page.frame).map(|f| f.rotation) {
+        (0..editor.source().page_count()?)
+            .try_for_each(|page| editor.set_page_rotation(page, rotation))?;
+    }
 
     std::fs::write(output, editor.save_to_bytes()?)
         .with_context(|| format!("writing {}", output.display()))?;

@@ -32,6 +32,18 @@ const RULE_SEARCH: u32 = 12;
 /// The shortest horizontal dark run that can be a rule rather than a glyph.
 const MIN_RULE: u32 = 30;
 
+/// How far right of a label its rule may begin, in pixels. Beyond this the run
+/// belongs to something else on the row.
+const RULE_GAP: u32 = 60;
+
+/// Characters trimmed from each end of a long label before comparing, to absorb
+/// the engine misreading one.
+const MISREAD: usize = 1;
+
+/// Labels this short are matched strictly, trimming them leaving too little to
+/// be distinctive.
+const SHORT_LABEL: usize = 8;
+
 const DETECTION_MODEL: &str = "https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.rten";
 const RECOGNITION_MODEL: &str =
     "https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.rten";
@@ -166,10 +178,22 @@ fn blanks(
         .detect_words(&input)
         .and_then(|words| engine.recognize_text(&input, &engine.find_text_lines(&input, &words)))?;
 
-    let found: Vec<(String, ocrs::TextLine)> = words
-        .into_iter()
+    // Word granularity, not line. The engine happily runs two labels into one
+    // line -- `Datum: Pflegedienst:` on a page whose row is tight -- and a
+    // label matched against that line carries the far label's right edge with
+    // it, so the rule search starts past the wrong blank.
+    let found: Vec<(String, [i32; 4])> = words
+        .iter()
         .flatten()
-        .map(|line| (line.to_string(), line))
+        .flat_map(|line| {
+            line.words().map(|word| {
+                let bounds = word.bounding_rect();
+                (
+                    word.to_string(),
+                    [bounds.left(), bounds.right(), bounds.top(), bounds.bottom()],
+                )
+            })
+        })
         .collect();
 
     let ink = grey(page);
@@ -177,7 +201,7 @@ fn blanks(
         found
             .iter()
             .find(|(text, _)| matches(text, label))
-            .and_then(|(_, line)| rule_after(&ink, line, page.height()))
+            .and_then(|(_, bounds)| rule_after(&ink, *bounds, page.height()))
     };
 
     let date = locate(date_label);
@@ -215,39 +239,66 @@ fn matches(text: &str, label: &str) -> bool {
             .collect::<String>()
     };
     let (text, label) = (simplify(text), simplify(label));
-    !label.is_empty() && (text.starts_with(&label) || label.starts_with(&text) && text.len() > 6)
+    if label.is_empty() || text.is_empty() {
+        return false;
+    }
+
+    // A long label is compared on its interior, because the engine misreads the
+    // odd character and an end is where it hurts most:
+    // `Klient/Bevollmächtigter/Betreuer:` comes back as `<lient/...` on some
+    // pages, and a prefix comparison throws the label away over that one
+    // letter. A short one is compared strictly -- trimming `datum` leaves
+    // `atu`, which matches almost anything, and a label that matches noise is
+    // worse than one that misses, since it decides the page's orientation too.
+    if label.len() <= SHORT_LABEL {
+        text == label || text.starts_with(&label)
+    } else {
+        text.contains(&label[MISREAD..label.len() - MISREAD])
+    }
 }
 
-/// The longest horizontal run of ink to the right of `line`, as `(y, x0, x1)`.
-fn rule_after(ink: &GrayImage, line: &ocrs::TextLine, page_height: u32) -> Option<(u32, u32, u32)> {
-    let bounds = line.bounding_rect();
-    let right = bounds.right().max(0) as u32 + 2;
-    let top = bounds.top().max(0) as u32;
-    let bottom = (bounds.bottom().max(0) as u32 + RULE_SEARCH).min(page_height);
+/// The rule belonging to `line`: the nearest long horizontal run of ink to its
+/// right, as `(y, x0, x1)`.
+///
+/// Nearest, not longest. A form is full of table borders that run most of the
+/// page width, and any of them would beat a short underscore run if length
+/// decided it -- which is how a date ends up written across the sheet on the
+/// signature's line.
+fn rule_after(ink: &GrayImage, bounds: [i32; 4], page_height: u32) -> Option<(u32, u32, u32)> {
+    let [_, right, top, bottom] = bounds;
+    let right = right.max(0) as u32 + 2;
+    let top = top.max(0) as u32;
+    let bottom = (bottom.max(0) as u32 + RULE_SEARCH).min(page_height);
+    let limit = (right + RULE_GAP).min(ink.width());
 
     (top..bottom)
-        .filter_map(|y| longest_run(ink, y, right).map(|(x0, x1)| (y, x0, x1)))
-        .max_by_key(|(_, x0, x1)| x1 - x0)
-        .filter(|(_, x0, x1)| x1 - x0 >= MIN_RULE)
+        .filter_map(|y| first_run(ink, y, right, limit).map(|(x0, x1)| (y, x0, x1)))
+        .min_by_key(|&(_, x0, x1)| (x0, u32::MAX - (x1 - x0)))
 }
 
-/// The longest unbroken run of ink on row `y`, starting at `from`.
-fn longest_run(ink: &GrayImage, y: u32, from: u32) -> Option<(u32, u32)> {
-    let mut best: Option<(u32, u32)> = None;
+/// The first unbroken run of ink at least [`MIN_RULE`] wide on row `y`, looking
+/// rightward from `from` and giving up at `limit`.
+fn first_run(ink: &GrayImage, y: u32, from: u32, limit: u32) -> Option<(u32, u32)> {
     let mut start: Option<u32> = None;
 
     for x in from..ink.width() {
         if ink.get_pixel(x, y).0[0] < INK {
-            let begin = *start.get_or_insert(x);
-            if best.is_none_or(|(b0, b1)| x - begin > b1 - b0) {
-                best = Some((begin, x));
+            // A rule has to begin near the label it belongs to, but may run
+            // past `limit` once it has started.
+            if start.is_none() && x >= limit {
+                return None;
             }
-        } else {
-            start = None;
+            start.get_or_insert(x);
+        } else if let Some(begin) = start.take()
+            && x - begin >= MIN_RULE
+        {
+            return Some((begin, x));
         }
     }
 
-    best
+    start
+        .filter(|begin| ink.width() - begin >= MIN_RULE)
+        .map(|begin| (begin, ink.width()))
 }
 
 fn grey(page: &RgbImage) -> GrayImage {

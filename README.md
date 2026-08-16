@@ -83,10 +83,24 @@ OCR finds the labels; it does not find the blanks, having no reliable glyph
 shape to latch onto for a run of underscores. The blank is found in the pixels
 instead, as the longest horizontal run of dark ones to the right of the label.
 
+Labels are matched a word at a time, not a line at a time, because the engine
+will run two of them together on a tight row, and a label matched against that
+line carries the far label's right edge with it. Matching also tolerates a
+misread character at either end of a long label -- `Klient/...` comes back as
+`<lient/...` and `Jlient/...` on different pages of the same document -- while
+short labels are compared strictly, a loose one being worse than a missed one
+since it decides the page's orientation too.
+
+The rule taken is the nearest one to the label, not the longest. A form is full
+of table borders running most of the page width, and length would pick one of
+those every time.
+
 Orientation is worked out the same way. Page metadata cannot say which way up a
 scan is, since `/Rotate` 0 and 180 are both landscape, so each turn is tried and
 whichever one yields the labels wins. That turn is settled once per document and
-reused. A page needing a quarter turn is refused rather than guessed at.
+reused, and the output is written back the right way up -- every page of it, so
+the sheaf stays consistent. A page needing a quarter turn is refused rather than
+guessed at.
 
 Build with `--release` for this: the inference runtime is unusably slow
 otherwise, by two orders of magnitude.

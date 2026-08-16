@@ -1,18 +1,23 @@
 //! Locating the blanks and stamping them.
 //!
-//! `pdf_oxide` does the reading -- it is the only crate here that reports
-//! per-character bounding boxes, which is what makes the underscore runs
-//! findable. `lopdf` does the writing, because `pdf_oxide` 0.3.77 cannot
-//! overlay onto an existing page: its additions inherit the original content
-//! stream's transform, it emits `BT` without `ET`, and it references an image
-//! XObject it never registers.
+//! Reading wants per-character bounding boxes, which is what makes the
+//! underscore runs findable, and `pdf_oxide` is alone in reporting them. It
+//! does the writing too, but only via our fork: overlaying onto an existing
+//! page is broken in 0.3.77, which inherits the original content stream's
+//! transform, emits `BT` without `ET`, and references an image XObject it never
+//! registers.
 
 use anyhow::{Context, Result, bail};
-use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
+use image::ImageFormat;
 use pdf_oxide::document::PdfDocument;
+use pdf_oxide::editor::DocumentEditor;
+use pdf_oxide::elements::{FontSpec, ImageContent, TextContent, TextStyle};
 use pdf_oxide::geometry::Rect;
 use pdf_oxide::layout::TextChar;
+use std::io::Cursor;
 use std::path::Path;
+
+mod scan;
 
 #[cfg(test)]
 mod tests;
@@ -27,16 +32,14 @@ pub(crate) struct Fill<'a> {
     pub(crate) size: Size,
 }
 
-/// Resource names for what we add. Names are scoped to a page's resource
-/// dictionary, so these only have to avoid colliding with the generator's own.
-const FONT_RESOURCE: &str = "SignerHelvetica";
-const IMAGE_RESOURCE: &str = "SignerSignature";
-
 /// The blanks to fill on one page.
 struct Page {
     index: usize,
     date: Option<Rect>,
     signature: Option<Rect>,
+    /// Set only for scanned pages, whose geometry is measured upright rather
+    /// than along the page's own axes.
+    frame: Option<scan::Frame>,
 }
 
 /// PDF points per millimetre.
@@ -55,18 +58,20 @@ pub(crate) enum Size {
     Height(f32),
 }
 
-/// A signature image, premultiplied into the two planes a PDF wants: the colour
-/// to paint, and the soft mask saying where to paint it.
+/// A signature image, as an RGBA PNG.
+///
+/// The alpha has to travel inside the encoded image rather than beside it,
+/// because that is where [`ImageContent`] looks for it when deciding whether
+/// the PDF image gets a soft mask.
 pub(crate) struct Signature {
     width: u32,
     height: u32,
-    color: Vec<u8>,
-    alpha: Vec<u8>,
+    png: Vec<u8>,
 }
 
 impl Signature {
     pub(crate) fn load(path: &Path) -> Result<Self> {
-        let image = image::open(path)
+        let mut image = image::open(path)
             .with_context(|| format!("reading {}", path.display()))?
             .into_rgba8();
         let (width, height) = image.dimensions();
@@ -74,27 +79,20 @@ impl Signature {
         // A scan has no alpha channel, just dark ink on light paper. Deriving
         // the mask from luminance keeps the paper from being painted as a white
         // box over the line, and preserves the ink's antialiasing.
-        let scanned = image.pixels().all(|pixel| pixel[3] == u8::MAX);
-
-        let mut color = Vec::with_capacity(width as usize * height as usize * 3);
-        let mut alpha = Vec::with_capacity(width as usize * height as usize);
-        for pixel in image.pixels() {
-            let [red, green, blue, opacity] = pixel.0;
-            color.extend_from_slice(&[red, green, blue]);
-            alpha.push(if scanned {
+        if image.pixels().all(|pixel| pixel[3] == u8::MAX) {
+            image.pixels_mut().for_each(|pixel| {
+                let [red, green, blue, _] = pixel.0;
                 let luma = 0.299 * red as f32 + 0.587 * green as f32 + 0.114 * blue as f32;
-                u8::MAX - luma as u8
-            } else {
-                opacity
+                pixel.0[3] = u8::MAX - luma as u8;
             });
         }
 
-        Ok(Self {
-            width,
-            height,
-            color,
-            alpha,
-        })
+        let mut png = Vec::new();
+        image
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .context("re-encoding the signature")?;
+
+        Ok(Self { width, height, png })
     }
 
     /// Where to draw the signature over `blank`.
@@ -117,42 +115,11 @@ impl Signature {
         };
         Rect::new(blank.x, blank.y - height * PIVOT, width, height)
     }
-
-    /// Write the image and its soft mask, and hand back the id to draw.
-    fn write_to(&self, doc: &mut Document) -> Result<ObjectId> {
-        let mut mask = Stream::new(
-            dictionary! {
-                "Type" => "XObject",
-                "Subtype" => "Image",
-                "Width" => self.width as i64,
-                "Height" => self.height as i64,
-                "ColorSpace" => "DeviceGray",
-                "BitsPerComponent" => 8,
-            },
-            self.alpha.clone(),
-        );
-        mask.compress()?;
-        let mask = doc.add_object(mask);
-
-        let mut image = Stream::new(
-            dictionary! {
-                "Type" => "XObject",
-                "Subtype" => "Image",
-                "Width" => self.width as i64,
-                "Height" => self.height as i64,
-                "ColorSpace" => "DeviceRGB",
-                "BitsPerComponent" => 8,
-                "SMask" => Object::Reference(mask),
-            },
-            self.color.clone(),
-        );
-        image.compress()?;
-        Ok(doc.add_object(image))
-    }
 }
 
 pub(crate) fn sign(input: &Path, output: &Path, fill: &Fill) -> Result<()> {
-    let pages = locate(input, fill)?;
+    let mut editor = DocumentEditor::open(input)?;
+    let pages = locate(editor.source(), fill)?;
     if pages.is_empty() {
         bail!(
             "found no `{}` or `{}` blank to fill",
@@ -161,125 +128,108 @@ pub(crate) fn sign(input: &Path, output: &Path, fill: &Fill) -> Result<()> {
         );
     }
 
-    let mut doc = Document::load(input)?;
-    let page_ids = doc.get_pages();
-    let image = fill.signature.write_to(&mut doc)?;
-    let font = doc.add_object(dictionary! {
-        "Type" => "Font",
-        "Subtype" => "Type1",
-        "BaseFont" => "Helvetica",
-        "Encoding" => "WinAnsiEncoding",
-    });
+    pages.iter().try_for_each(|page| -> Result<()> {
+        // Laid out upright, then turned into the page's own axes. For a
+        // digital page the two are the same and the matrix is the identity.
+        let frame = page.frame.map(|frame| frame.matrix()).transpose()?;
 
-    for page in &pages {
-        let page_id = *page_ids
-            .get(&(page.index as u32 + 1))
-            .with_context(|| format!("page {} is missing", page.index + 1))?;
+        let date = page.date.map(|blank| {
+            let mut date = TextContent::new(
+                fill.date,
+                // Indented by about one underscore, and lifted off the line.
+                Rect::new(
+                    blank.x + fill.date_font_size / 4.0,
+                    blank.y + 1.0,
+                    blank.width,
+                    fill.date_font_size,
+                ),
+                FontSpec::new("Helvetica", fill.date_font_size),
+                TextStyle::default(),
+            );
+            date.matrix = frame.map(|frame| placed(frame, date.bbox.x, date.bbox.y));
+            date
+        });
+        let signature = page
+            .signature
+            .map(|blank| {
+                let at = fill.signature.placement(blank, fill.size);
+                ImageContent::from_bytes(at, fill.signature.png.clone()).map(|mut signature| {
+                    signature.matrix = frame;
+                    signature
+                })
+            })
+            .transpose()?;
 
-        let mut overlay = String::new();
-        if let Some(blank) = page.date {
-            add_resource(&mut doc, page_id, "Font", FONT_RESOURCE, font)?;
-            overlay.push_str(&format!(
-                "BT /{FONT_RESOURCE} {} Tf 0 g 1 0 0 1 {} {} Tm ({}) Tj ET\n",
-                fill.date_font_size,
-                blank.x + fill.date_font_size / 4.0,
-                blank.y + 1.0,
-                escape(fill.date),
-            ));
-        }
-        if let Some(blank) = page.signature {
-            doc.add_xobject(page_id, IMAGE_RESOURCE, image)?;
-            let at = fill.signature.placement(blank, fill.size);
-            overlay.push_str(&format!(
-                "q {} 0 0 {} {} {} cm /{IMAGE_RESOURCE} Do Q\n",
-                at.width, at.height, at.x, at.y,
-            ));
-        }
-        overlay_page(&mut doc, page_id, overlay)?;
-    }
+        editor.edit_page(page.index, |page| {
+            if let Some(date) = date {
+                page.add_text(date);
+            }
+            if let Some(signature) = signature {
+                page.add_image(signature);
+            }
+            Ok(())
+        })?;
+        Ok(())
+    })?;
 
-    doc.save(output)
+    std::fs::write(output, editor.save_to_bytes()?)
         .with_context(|| format!("writing {}", output.display()))?;
     Ok(())
 }
 
-/// Append `overlay` to a page's content, sandwiched so that it starts from the
-/// page's own coordinate system rather than whatever transform the original
-/// content stream happened to leave behind.
-fn overlay_page(doc: &mut Document, page_id: ObjectId, overlay: String) -> Result<()> {
-    let save = doc.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
-    let restore = doc.add_object(Stream::new(
-        Dictionary::new(),
-        format!("Q\nq\n{overlay}Q\n").into_bytes(),
-    ));
-
-    let page = doc.get_object(page_id).and_then(Object::as_dict)?;
-    let mut contents = match page.get(b"Contents")? {
-        Object::Reference(id) => vec![Object::Reference(*id)],
-        Object::Array(array) => array.clone(),
-        other => bail!("unsupported page contents: {other:?}"),
-    };
-    contents.insert(0, Object::Reference(save));
-    contents.push(Object::Reference(restore));
-
-    let page = doc.get_object_mut(page_id).and_then(Object::as_dict_mut)?;
-    page.set("Contents", Object::Array(contents));
-    Ok(())
-}
-
-/// `lopdf` only has [`Document::add_xobject`] for this; fonts need the same
-/// walk through a resource dictionary that may itself be behind a reference.
-fn add_resource(
-    doc: &mut Document,
-    page_id: ObjectId,
-    kind: &str,
-    name: &str,
-    id: ObjectId,
-) -> Result<()> {
-    let resources = doc
-        .get_or_create_resources(page_id)
-        .and_then(Object::as_dict_mut)?;
-    if !resources.has(kind.as_bytes()) {
-        resources.set(kind, Dictionary::new());
-    }
-
-    let mut entries = resources.get_mut(kind.as_bytes())?;
-    if let Object::Reference(reference) = entries {
-        let mut entries_id = *reference;
-        while let Object::Reference(id) = doc.get_object(entries_id)? {
-            entries_id = *id;
-        }
-        entries = doc.get_object_mut(entries_id)?;
-    }
-    Object::as_dict_mut(entries)?.set(name, Object::Reference(id));
-    Ok(())
-}
-
-/// Escape a PDF literal string.
-fn escape(text: &str) -> String {
-    text.replace('\\', r"\\")
-        .replace('(', r"\(")
-        .replace(')', r"\)")
+/// `frame` with a translation to `(x, y)` applied first.
+///
+/// A text matrix replaces the position outright, unlike an image's, which the
+/// writer emits alongside a transform already carrying the offset, so the two
+/// have to be composed here.
+fn placed(frame: [f32; 6], x: f32, y: f32) -> [f32; 6] {
+    let [a, b, c, d, e, f] = frame;
+    [a, b, c, d, a * x + c * y + e, b * x + d * y + f]
 }
 
 /// The pages holding blanks, and where those blanks are.
-fn locate(input: &Path, fill: &Fill) -> Result<Vec<Page>> {
-    let doc = PdfDocument::open(input)?;
-    let mut pages = Vec::new();
+fn locate(doc: &PdfDocument, fill: &Fill) -> Result<Vec<Page>> {
+    let from_text: Vec<Page> = (0..doc.page_count()?)
+        .map(|index| {
+            let chars = doc.extract_page_text(index)?.chars;
+            Ok(Page {
+                index,
+                date: find_blank(&chars, fill.date_label),
+                signature: find_blank(&chars, fill.signature_label),
+                frame: None,
+            })
+        })
+        // Errors are kept so that `collect` propagates them; only pages that
+        // genuinely carry no blank are dropped.
+        .filter(|page| {
+            page.as_ref()
+                .map_or(true, |page| page.date.is_some() || page.signature.is_some())
+        })
+        .collect::<Result<_>>()?;
 
-    for index in 0..doc.page_count()? {
-        let chars = doc.extract_page_text(index)?.chars;
-        let page = Page {
-            index,
-            date: find_blank(&chars, fill.date_label),
-            signature: find_blank(&chars, fill.signature_label),
-        };
-        if page.date.is_some() || page.signature.is_some() {
-            pages.push(page);
-        }
+    if !from_text.is_empty() {
+        return Ok(from_text);
     }
 
-    Ok(pages)
+    // Nothing in the text layer means a scan: a photograph of paper, with no
+    // characters to match. Reading the pixels is the only way in, and is kept
+    // off the digital path entirely because it is far slower and approximate.
+    Ok(scan::read(doc, fill.date_label, fill.signature_label)?
+        .into_iter()
+        .map(|(index, scanned)| {
+            eprintln!(
+                "signer: page {} read by OCR, upright at {} degrees",
+                index + 1,
+                scanned.frame.rotation
+            );
+            Page {
+                index,
+                date: scanned.date,
+                signature: scanned.signature,
+                frame: Some(scanned.frame),
+            }
+        })
+        .collect())
 }
 
 /// The run of underscores following `label`, in PDF points measured up from the

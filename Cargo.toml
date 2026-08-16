@@ -3,13 +3,26 @@ name = "signer"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 image = { version = "0.25.10", default-features = false, features = ["tiff", "png", "jpeg"] }
 jiff = "0.2"
-lopdf = "0.44.0"
-pdf_oxide = "0.3"
+ocrs = "0.12.2"
+# Our fork, until the overlay fixes it carries land upstream. Writing an overlay
+# onto an existing page is broken in 0.3.77: it inherits the original content
+# stream's transform, leaves `BT` unclosed, and never registers the image
+# XObject it draws.
+pdf_oxide = { git = "https://github.com/virtualritz/pdf_oxide.git", branch = "main", features = [
+    "rendering",
+] }
+rten = "0.24"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+ureq = "3.4.0"

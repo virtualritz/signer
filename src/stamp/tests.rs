@@ -18,8 +18,7 @@ fn signature(width: u32, height: u32) -> Signature {
     Signature {
         width,
         height,
-        color: Vec::new(),
-        alpha: Vec::new(),
+        png: Vec::new(),
     }
 }
 
@@ -103,16 +102,4 @@ fn resizing_holds_the_pivot_still() {
             "pivot left the line"
         );
     }
-}
-
-#[test]
-fn pdf_string_delimiters_are_escaped() {
-    assert_eq!(escape(r"a(b)c\d"), r"a\(b\)c\\d");
-}
-
-#[test]
-fn escaping_a_backslash_does_not_escape_what_follows() {
-    // The backslash has to be doubled first, or `\(` would come out as `\\(`
-    // and close the string early.
-    assert_eq!(escape(r"\("), r"\\\(");
 }

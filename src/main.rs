@@ -125,7 +125,7 @@ fn main() -> Result<()> {
         size,
     };
 
-    for pdf in &cli.pdfs {
+    cli.pdfs.iter().try_for_each(|pdf| {
         let output = if cli.in_place {
             pdf.clone()
         } else {
@@ -134,9 +134,8 @@ fn main() -> Result<()> {
         };
         stamp::sign(pdf, &output, &fill).with_context(|| format!("signing {}", pdf.display()))?;
         println!("{}", output.display());
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Read `date` -- or today, if there is none -- and write it back out in

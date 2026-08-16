@@ -73,14 +73,34 @@ point a tenth of the way up the signature's own left edge, pinned to the left en
 of the underline, so resizing keeps that point fixed and the signature sits on
 the line with only its descenders below.
 
+## Scanned documents
+
+A document with no text layer -- a photograph or scan of the paper form -- is
+read by OCR instead. This is automatic: the text layer is tried first, so
+digital PDFs stay exact and fast, and only a scan pays for it.
+
+OCR finds the labels; it does not find the blanks, having no reliable glyph
+shape to latch onto for a run of underscores. The blank is found in the pixels
+instead, as the longest horizontal run of dark ones to the right of the label.
+
+Orientation is worked out the same way. Page metadata cannot say which way up a
+scan is, since `/Rotate` 0 and 180 are both landscape, so each turn is tried and
+whichever one yields the labels wins. That turn is settled once per document and
+reused. A page needing a quarter turn is refused rather than guessed at.
+
+Build with `--release` for this: the inference runtime is unusably slow
+otherwise, by two orders of magnitude.
+
 ## Implementation
 
-[`pdf_oxide`] reads and [`lopdf`] writes. The read side wants per-character
-bounding boxes to locate the underscore runs, which `pdf_oxide` is alone in
-reporting. The write side cannot use it: as of 0.3.77 its overlay inherits the
-original content stream's transform instead of starting in page space, emits `BT`
-without a closing `ET`, and references an image XObject it never registers, so
-`add_image_bytes_to_page` cannot work at all.
+[`pdf_oxide`] does the reading and the writing, [`ocrs`] the OCR.
+
+The dependency is a [fork]. Overlaying onto an existing page is broken in
+0.3.77: the overlay inherits the original content stream's transform instead of
+starting in page space, `BT` is emitted without a closing `ET`, and the image
+XObject it draws is never registered, so `add_image_bytes_to_page` cannot work
+at all. A fourth defect, `TextContent::matrix` being ignored, made rotated text
+impossible. The fixes are not yet upstream.
 
 ## Development
 
@@ -94,4 +114,5 @@ just ci    # fmt-check + check + lint-check + test + build
 
 [blueprints]: https://github.com/virtualritz/blueprints
 [`pdf_oxide`]: https://crates.io/crates/pdf_oxide
-[`lopdf`]: https://crates.io/crates/lopdf
+[`ocrs`]: https://crates.io/crates/ocrs
+[fork]: https://github.com/virtualritz/pdf_oxide

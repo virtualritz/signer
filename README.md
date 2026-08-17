@@ -1,46 +1,71 @@
 # `signer`
 
-A PDF signing CLI helper. It writes a date and a signature image into the blanks
-that follow two labels, defaulting to the `Datum:` and
-`Klient/Bevollmächtigter/Betreuer:` of a Leistungsnachweis.
+Writes a date and a signature image into the blanks of a PDF form. It was built
+for a Leistungsnachweis, whose blanks follow the labels `Datum:` and
+`Klient/Bevollmächtigter/Betreuer:`, but the labels are configurable.
 
-## Usage
+Both digital PDFs and scans work. See [About scanned
+documents](#about-scanned-documents).
 
-```sh
-signer ~/Downloads/Leistungsnachweis_Mai_?.pdf
-```
+## Getting started
 
-Each input gets a `<name>_signed.pdf` beside it, unless `--in-place` is given.
-
-A blank is the run of underscores following its label. Blanks are found by that
-label rather than by position, so page size, layout and count do not matter.
-Every page carrying a label is filled; a document carrying none is an error
-rather than a silent no-op.
-
-Both labels are configurable, so any form laid out this way can be filled:
+Install it:
 
 ```sh
-signer --date-label 'Date:' --signature-label 'Signed:' contract.pdf
+cargo install --path .
 ```
 
-## Configuration
+Save your signature as a PNG, JPEG or TIFF. A photo of ink on white paper is
+fine, and so is a PNG with a transparent background. Note where you put it.
 
-`<config dir>/signer/config.toml`, which is `~/.config/signer/config.toml` on
-Linux. Flags override it, and a signature in neither is an error.
+Create `~/.config/signer/config.toml` with that path:
 
 ```toml
-signature = "/path/to/signature.tif"
+signature = "/home/you/signature.png"
+```
 
-# Optional, shown with their defaults:
-# date_label = "Datum:"
-# signature_label = "Klient/Bevollmächtigter/Betreuer:"
-# date_format = "%d.%m.%Y"
-# scale = 200.0
-# signature_height = 10.0    # Millimetres. Takes precedence over `scale`.
-# date_font_size = 8.0       # Points.
+Now sign a document:
+
+```sh
+signer Leistungsnachweis_Mai.pdf
+```
+
+It prints the file it wrote:
+
+```
+Leistungsnachweis_Mai_signed.pdf
+```
+
+The original is untouched. Open the new file and check two things: today's date
+sits on the line after `Datum:`, and your signature sits on the line after
+`Klient/Bevollmächtigter/Betreuer:`.
+
+If the signature is too large or too small, change its size and run again:
+
+```sh
+signer --scale 120 Leistungsnachweis_Mai.pdf
+```
+
+`--scale` is a percentage of the width of the blank, so `100` makes the
+signature exactly as wide as the line. Once you find a size you like, put it in
+the config file so you do not have to pass it every time:
+
+```toml
+signature = "/home/you/signature.png"
+scale = 120.0
+```
+
+That is the whole workflow. Pass several files at once when the month's
+documents arrive together:
+
+```sh
+signer ~/Downloads/Leistungsnachweis_*.pdf
 ```
 
 ## Options
+
+Flags override the config file. Without a signature in either, `signer` stops
+with an error.
 
 | Flag                        | Config key         |                                                  |
 | --------------------------- | ------------------ | ------------------------------------------------ |
@@ -55,71 +80,81 @@ signature = "/path/to/signature.tif"
 | `-c`, `--config <PATH>`     |                    | Config file to read instead of the default.      |
 | `--in-place`                |                    | Overwrite the inputs.                            |
 
-## Dates
+## Configuration file
+
+`<config dir>/signer/config.toml`, which is `~/.config/signer/config.toml` on
+Linux. Every key is optional except `signature`.
+
+```toml
+signature = "/path/to/signature.png"
+
+# Shown with their defaults:
+# date_label = "Datum:"
+# signature_label = "Klient/Bevollmächtigter/Betreuer:"
+# date_format = "%d.%m.%Y"
+# scale = 200.0
+# signature_height = 10.0    # Millimetres. Takes precedence over `scale`.
+# date_font_size = 8.0       # Points.
+```
 
 `--date` is parsed and written back out in `date_format`, so the result is the
-same however the date was typed. Month names render in English.
+same however you type the date. Month names render in English.
 
-## Signature image
+The signature is sized by `--scale`, or by `--signature-height` in millimetres,
+which wins if both are given. Both keep the left end of the signature pinned to
+the left end of the line, so changing the size does not move it sideways.
 
-Any format the `image` crate reads, TIFF and PNG included. An alpha channel is
-used as-is. A scan without one has its mask derived from luminance, so the paper
-around the ink stays transparent instead of pasting a white box over the line,
-and the ink keeps its antialiasing.
+## How to sign a different form
 
-Size comes from `--scale`, a percentage of the width of the blank, or from
-`--signature-height` in millimetres, which takes precedence. Both pivot on the
-point a tenth of the way up the signature's own left edge, pinned to the left end
-of the underline, so resizing keeps that point fixed and the signature sits on
-the line with only its descenders below.
+Point the two labels at whatever the form uses:
 
-## Scanned documents
+```sh
+signer --date-label 'Date:' --signature-label 'Signed:' contract.pdf
+```
 
-A document with no text layer -- a photograph or scan of the paper form -- is
-read by OCR instead. This is automatic: the text layer is tried first, so
-digital PDFs stay exact and fast, and only a scan pays for it.
+A blank is the run of underscores following its label. Blanks are found by that
+label rather than by position, so page size, layout and page count do not
+matter. Every page carrying a label is filled. A document carrying none is an
+error rather than a silent no-op.
 
-OCR finds the labels; it does not find the blanks, having no reliable glyph
-shape to latch onto for a run of underscores. The blank is found in the pixels
-instead, as the longest horizontal run of dark ones to the right of the label.
+## About scanned documents
 
-Labels are matched a word at a time, not a line at a time, because the engine
-will run two of them together on a tight row, and a label matched against that
-line carries the far label's right edge with it. Matching also tolerates a
-misread character at either end of a long label -- `Klient/...` comes back as
-`<lient/...` and `Jlient/...` on different pages of the same document -- while
-short labels are compared strictly, a loose one being worse than a missed one
-since it decides the page's orientation too.
+A scan is a photograph of paper: it has no text layer, so there is nothing to
+match and no character positions to read. `signer` falls back to OCR for these,
+automatically. Digital PDFs never reach that path and stay exact and fast.
 
-The rule taken is the nearest one to the label, not the longest. A form is full
-of table borders running most of the page width, and length would pick one of
-those every time.
+Three things follow from this, and they are the reason scans behave differently:
 
-Orientation is worked out the same way. Page metadata cannot say which way up a
-scan is, since `/Rotate` 0 and 180 are both landscape, so each turn is tried and
-whichever one yields the labels wins. That turn is settled once per document and
-reused, and the output is written back the right way up -- every page of it, so
-the sheaf stays consistent. A page needing a quarter turn is refused rather than
-guessed at.
+- **Build with `--release`.** The inference runtime is roughly a hundred times
+  slower otherwise. `cargo install` already does this.
+- **The first scan downloads about 12 MB of OCR models**, once, into
+  `~/.cache/ocrs`.
+- **Scans are slower.** A four page scan takes about eight seconds, against a
+  quarter of a second for three digital documents.
 
-Build with `--release` for this: the inference runtime is unusably slow
-otherwise, by two orders of magnitude.
+`signer` also works out which way up a scan is, because page metadata cannot say
+-- a landscape page reads the same whether its rotation is recorded as 0 or 180.
+It tries each turn and keeps whichever one the labels appear in, then writes the
+document back the right way up, every page of it.
 
-## Implementation
+A page that needs a quarter turn is refused rather than guessed at. That case
+also swaps the page's width and height, and it has not been tested against a
+real document.
+
+## About the implementation
 
 [`pdf_oxide`] does the reading and the writing, [`ocrs`] the OCR.
 
-The dependency is a [fork]. Overlaying onto an existing page is broken in
-0.3.77: the overlay inherits the original content stream's transform instead of
-starting in page space, `BT` is emitted without a closing `ET`, and the image
-XObject it draws is never registered, so `add_image_bytes_to_page` cannot work
-at all. A fourth defect, `TextContent::matrix` being ignored, made rotated text
-impossible. The fixes are not yet upstream.
+`pdf_oxide` is used through a [fork]. Drawing onto an existing page is broken in
+0.3.77 in four ways: the overlay inherits the original content stream's
+transform instead of starting in page space, `BT` is emitted without a closing
+`ET`, the image XObject it draws is never registered, and `TextContent::matrix`
+is ignored, which makes rotated text impossible. The fixes are not yet upstream.
 
 ## Development
 
 Standards come from [blueprints], vendored at `.blueprints`. That submodule is
-private, so `--recursive` clones will skip it; nothing in the build depends on
+private, so `--recursive` clones will skip it. Nothing in the build depends on
 it.
 
 ```sh
